@@ -4,18 +4,13 @@ import org.objectweb.asm.*;
 import java.lang.instrument.ClassFileTransformer;
 import java.security.ProtectionDomain;
 
-/**
- * Injects scale into the RS2 framebuffer class.
- *
- * Key fix: we no longer assume the render method is called "paint".
- * Instead, we scan every method for a Graphics.drawImage call, and in
- * THAT method we inject registerGraphics() at the top + applyScale()
- * before the drawImage. This works regardless of obfuscated method names.
- */
 public class FrameBufferScaleTransformer implements ClassFileTransformer {
 
     private final String explicitTarget;
     private volatile String selectedTarget;
+    // Also hook the applet base class to clear overlay on login screen
+    private static final String APPLET_BASE = "as";
+    private static volatile boolean appletHooked = false;
 
     public FrameBufferScaleTransformer() {
         String prop = System.getProperty("agent.target");
@@ -27,8 +22,13 @@ public class FrameBufferScaleTransformer implements ClassFileTransformer {
     public byte[] transform(ClassLoader loader, String className,
                             Class<?> classBeingRedefined,
                             ProtectionDomain protectionDomain, byte[] bytes) {
-
         if (className == null || bytes == null) return null;
+
+        // Hook the applet base class paint() to clear overlay on login screen
+        if (className.equals(APPLET_BASE) && !appletHooked) {
+            appletHooked = true;
+            return hookAppletPaint(bytes);
+        }
 
         try {
             if (explicitTarget != null) {
@@ -60,19 +60,53 @@ public class FrameBufferScaleTransformer implements ClassFileTransformer {
         }
     }
 
-    // =========================================================
-    // PASS 1: find which methods contain drawImage calls
-    // =========================================================
+    /**
+     * Hook as.paint(Graphics) to call Hooks.onPaint(Graphics).
+     * This fires on every AWT repaint including the login screen,
+     * giving us a chance to clear stale overlay pixels.
+     */
+    private byte[] hookAppletPaint(byte[] bytes) {
+        try {
+            ClassReader cr = new ClassReader(bytes);
+            ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+
+            cr.accept(new ClassVisitor(Opcodes.ASM9, cw) {
+                @Override
+                public MethodVisitor visitMethod(int access, String name, String desc,
+                                                 String sig, String[] ex) {
+                    MethodVisitor mv = super.visitMethod(access, name, desc, sig, ex);
+                    // Hook paint(Graphics)
+                    if (name.equals("paint") && desc.equals("(Ljava/awt/Graphics;)V")) {
+                        System.out.println("[Hook] hooked as.paint(Graphics)");
+                        return new org.objectweb.asm.commons.AdviceAdapter(
+                                Opcodes.ASM9, mv, access, name, desc) {
+                            @Override
+                            protected void onMethodEnter() {
+                                // Pass Graphics arg to our handler
+                                mv.visitVarInsn(ALOAD, 1);
+                                mv.visitMethodInsn(INVOKESTATIC,
+                                        "agent/Hooks", "onPaint",
+                                        "(Ljava/awt/Graphics;)V", false);
+                            }
+                        };
+                    }
+                    return mv;
+                }
+            }, ClassReader.EXPAND_FRAMES);
+
+            return cw.toByteArray();
+        } catch (Exception e) {
+            System.out.println("[Hook] failed to hook as.paint: " + e);
+            return null;
+        }
+    }
 
     private static java.util.Set<String> findRenderMethods(byte[] bytes) {
         java.util.Set<String> methods = new java.util.HashSet<>();
-
         new ClassReader(bytes).accept(new ClassVisitor(Opcodes.ASM9) {
             @Override
             public MethodVisitor visitMethod(int access, String name, String desc,
                                              String signature, String[] exceptions) {
-                // Must accept a Graphics parameter OR return void with no args
-                // (obfuscated render methods often take Graphics as an arg)
                 return new MethodVisitor(Opcodes.ASM9) {
                     @Override
                     public void visitMethodInsn(int opcode, String owner,
@@ -89,18 +123,11 @@ public class FrameBufferScaleTransformer implements ClassFileTransformer {
                 };
             }
         }, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
-
         return methods;
     }
 
-    // =========================================================
-    // PASS 2: inject into those methods
-    // =========================================================
-
     private byte[] inject(byte[] bytes) {
-        // First pass: find which methods call drawImage
         java.util.Set<String> renderMethods = findRenderMethods(bytes);
-
         if (renderMethods.isEmpty()) {
             System.out.println("[Hook] WARNING: no drawImage methods found, skipping");
             return null;
@@ -113,46 +140,30 @@ public class FrameBufferScaleTransformer implements ClassFileTransformer {
             @Override
             public MethodVisitor visitMethod(int access, String name, String desc,
                                              String signature, String[] exceptions) {
-
                 MethodVisitor mv = super.visitMethod(access, name, desc, signature, exceptions);
-
                 String key = name + desc;
-                if (!renderMethods.contains(key)) return mv; // not a render method, skip
+                if (!renderMethods.contains(key)) return mv;
 
                 System.out.println("[Inject] hooking render method: " + name + desc);
-
-                // Find the index of the Graphics parameter in this method's args.
-                // e.g. (Ljava/awt/Graphics;)V  → index 1 (index 0 = this)
-                //      (ILjava/awt/Graphics;)V → index 2
-                //      ()V                     → -1 (no Graphics arg; use ThreadLocal fallback)
                 int graphicsArgIndex = findGraphicsArg(access, desc);
 
                 return new MethodVisitor(Opcodes.ASM9, mv) {
-
                     @Override
                     public void visitCode() {
                         super.visitCode();
-
                         if (graphicsArgIndex >= 0) {
-                            // Register the Graphics arg at the top of the method
                             mv.visitVarInsn(Opcodes.ALOAD, graphicsArgIndex);
                             mv.visitMethodInsn(Opcodes.INVOKESTATIC,
-                                    "agent/ScaleHelper",
-                                    "registerGraphics",
-                                    "(Ljava/awt/Graphics;)V",
-                                    false);
-                            System.out.println("[Inject] registerGraphics(arg " 
+                                    "agent/ScaleHelper", "registerGraphics",
+                                    "(Ljava/awt/Graphics;)V", false);
+                            System.out.println("[Inject] registerGraphics(arg "
                                     + graphicsArgIndex + ") in " + name);
-                        } else {
-                            System.out.println("[Inject] no Graphics arg in " + name
-                                    + " — will use frame fallback");
                         }
                     }
 
                     @Override
                     public void visitMethodInsn(int opcode, String owner,
                                                 String mname, String mdesc, boolean itf) {
-
                         boolean isDrawImage = mname.equals("drawImage")
                                 && (owner.equals("java/awt/Graphics")
                                 || owner.equals("java/awt/Graphics2D")
@@ -160,24 +171,27 @@ public class FrameBufferScaleTransformer implements ClassFileTransformer {
 
                         if (isDrawImage) {
                             mv.visitMethodInsn(Opcodes.INVOKESTATIC,
-                                    "agent/ScaleHelper",
-                                    "applyScale",
-                                    "()V",
-                                    false);
-                            System.out.println("[Inject] applyScale before drawImage in " + name);
+                                    "agent/ScaleHelper", "applyScale", "()V", false);
                         }
 
                         super.visitMethodInsn(opcode, owner, mname, mdesc, itf);
+
+                        if (isDrawImage) {
+                            // Pass 'this' (the at instance) so Hooks can check
+                            // framebuffer dimensions and only draw on the 512x334 game viewport
+                            mv.visitVarInsn(Opcodes.ALOAD, 0); // push 'this'
+                            mv.visitMethodInsn(Opcodes.INVOKESTATIC,
+                                    "agent/Hooks", "drawOverlayDirect",
+                                    "(Ljava/lang/Object;)V", false);
+                            System.out.println("[Inject] scale before + overlay after drawImage in " + name);
+                        }
                     }
 
                     @Override
                     public void visitInsn(int opcode) {
                         if (isReturnOpcode(opcode)) {
                             mv.visitMethodInsn(Opcodes.INVOKESTATIC,
-                                    "agent/ScaleHelper",
-                                    "clearGraphics",
-                                    "()V",
-                                    false);
+                                    "agent/ScaleHelper", "clearGraphics", "()V", false);
                         }
                         super.visitInsn(opcode);
                     }
@@ -188,17 +202,9 @@ public class FrameBufferScaleTransformer implements ClassFileTransformer {
         return cw.toByteArray();
     }
 
-    /**
-     * Find the local variable index of the first Graphics parameter.
-     * Returns -1 if there is none.
-     *
-     * For instance methods: index 0 = this, args start at 1.
-     * longs/doubles consume two slots.
-     */
     private static int findGraphicsArg(int access, String desc) {
         boolean isStatic = (access & Opcodes.ACC_STATIC) != 0;
-        int slot = isStatic ? 0 : 1; // skip 'this' for instance methods
-
+        int slot = isStatic ? 0 : 1;
         Type[] args = Type.getArgumentTypes(desc);
         for (Type arg : args) {
             String internal = arg.getInternalName();
@@ -207,9 +213,9 @@ public class FrameBufferScaleTransformer implements ClassFileTransformer {
                     || internal.equals("sun/java2d/SunGraphics2D")) {
                 return slot;
             }
-            slot += arg.getSize(); // double/long = 2 slots, everything else = 1
+            slot += arg.getSize();
         }
-        return -1; // no Graphics parameter found
+        return -1;
     }
 
     private static boolean isReturnOpcode(int op) {
@@ -217,10 +223,6 @@ public class FrameBufferScaleTransformer implements ClassFileTransformer {
                 || op == Opcodes.LRETURN || op == Opcodes.FRETURN
                 || op == Opcodes.DRETURN || op == Opcodes.ARETURN;
     }
-
-    // =========================================================
-    // SCORING
-    // =========================================================
 
     private static int score(byte[] bytes) {
         boolean[] implementsImageProducer = {false};
@@ -237,14 +239,12 @@ public class FrameBufferScaleTransformer implements ClassFileTransformer {
                         if ("java/awt/image/ImageProducer".equals(itf))
                             implementsImageProducer[0] = true;
             }
-
             @Override
             public FieldVisitor visitField(int access, String name, String desc,
                                            String signature, Object value) {
                 if ("[I".equals(desc)) hasIntArrayField[0] = true;
                 return super.visitField(access, name, desc, signature, value);
             }
-
             @Override
             public MethodVisitor visitMethod(int access, String name, String desc,
                                              String signature, String[] exceptions) {

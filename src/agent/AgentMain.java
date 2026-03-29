@@ -8,12 +8,13 @@ public class AgentMain {
         System.out.println("[Agent] loaded");
 
         inst.addTransformer(new FrameBufferScaleTransformer(), true);
+        CoordinateHook.install(inst);
 
         WindowStretch.start();
-
-        // Activate mouse coordinate remapping AFTER transformers are registered
         Bootstrap.init();
+        TileMarkerInput.install();
+        ClientSidebar.startWatcher();
 
-        System.out.println("[Agent] resizable stretch active");
+        System.out.println("[Agent] ready");
     }
 }
