@@ -24,6 +24,8 @@ public class Launcher {
     private final Path configFile  = rootDir.resolve("config.properties");
     private final PathDetector     detector = new PathDetector(this::log);
     private final ProcessManager   procMgr  = new ProcessManager(this::log);
+    // UpdateChecker is initialised after setupUI() so clientJarField exists
+    private UpdateChecker updater;
 
     // ── UI components ─────────────────────────────────────────────────────────
     // FIX: fields are only assigned once, inside setupUI() via styledField().
@@ -42,6 +44,10 @@ public class Launcher {
         loadConfig();
         autoDetectPaths();
         refreshFields();
+        // Initialise updater now that clientJarField exists and may have a path
+        updater = new UpdateChecker(this::log, resolveClientDir());
+        // Silent background check on startup
+        new Thread(this::runUpdateCheck).start();
     }
 
     // ── UI setup ──────────────────────────────────────────────────────────────
@@ -114,11 +120,12 @@ public class Launcher {
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
         buttons.setBackground(new Color(20, 20, 28));
 
-        JButton websiteStart = darkButton("▶ Start Website");
-        JButton serverStart  = darkButton("▶ Start Server");
-        JButton clientStart  = darkButton("▶ Start Client");
-        JButton autoDetect   = darkButton("Auto Detect");
-        JButton save         = darkButton("💾 Save Config");
+        JButton websiteStart  = darkButton("▶ Start Website");
+        JButton serverStart   = darkButton("▶ Start Server");
+        JButton clientStart   = darkButton("▶ Start Client");
+        JButton autoDetect    = darkButton("Auto Detect");
+        JButton save          = darkButton("💾 Save Config");
+        JButton checkUpdates  = darkButton("🔄 Check for Updates");
 
         websiteStart.addActionListener(e -> startWebsite());
         serverStart .addActionListener(e -> startServer());
@@ -129,12 +136,14 @@ public class Launcher {
             log("Auto-detected paths.");
         });
         save.addActionListener(e -> saveConfig());
+        checkUpdates.addActionListener(e -> new Thread(this::runUpdateCheck).start());
 
         buttons.add(websiteStart);
         buttons.add(serverStart);
         buttons.add(clientStart);
         buttons.add(autoDetect);
         buttons.add(save);
+        buttons.add(checkUpdates);
 
         JPanel statusPanel = new JPanel(new BorderLayout());
         statusPanel.setBackground(new Color(20, 20, 28));
@@ -361,6 +370,63 @@ public class Launcher {
             clientJarField .setText(cfg.clientJar);
         } catch (Exception e) {
             log("Load failed: " + e.getMessage());
+        }
+    }
+
+    // ── Update checking ───────────────────────────────────────────────────────
+
+    /**
+     * Resolves the client directory from the clientJarField path, falling back
+     * to rootDir/client if the field is blank or invalid.
+     */
+    private Path resolveClientDir() {
+        String jarPath = clientJarField.getText().trim();
+        if (!jarPath.isEmpty()) {
+            Path p = Paths.get(jarPath);
+            if (p.getParent() != null) return p.getParent();
+        }
+        return rootDir.resolve("client");
+    }
+
+    /**
+     * Runs a full update check and, if an update is available, prompts the user.
+     * Safe to call from any thread — all UI work is dispatched to the EDT.
+     */
+    private void runUpdateCheck() {
+        log("Checking for updates...");
+        UpdateChecker.CheckResult result = updater.check();
+
+        switch (result.status) {
+            case UP_TO_DATE:
+                log("Already up to date (" + result.localVersion + ").");
+                break;
+
+            case UPDATE_AVAILABLE:
+                log("Update available: " + result.localVersion
+                        + " → " + result.remoteVersion);
+                SwingUtilities.invokeLater(() -> {
+                    if (UpdateChecker.promptUser(frame, result)) {
+                        // Download on a background thread so the UI stays responsive
+                        new Thread(() -> {
+                            log("Downloading update...");
+                            boolean ok = updater.downloadUpdate();
+                            if (ok) {
+                                SwingUtilities.invokeLater(() ->
+                                    JOptionPane.showMessageDialog(frame,
+                                        "Update complete!\nPlease restart the launcher to use the new version.",
+                                        "Restart Required",
+                                        JOptionPane.INFORMATION_MESSAGE));
+                            }
+                        }).start();
+                    } else {
+                        log("Update skipped.");
+                    }
+                });
+                break;
+
+            case ERROR:
+                log("Update check failed: " + result.errorMessage);
+                break;
         }
     }
 
