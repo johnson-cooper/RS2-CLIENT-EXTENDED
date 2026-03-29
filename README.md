@@ -124,7 +124,7 @@ When exporting the JAR, make sure you handle dependencies correctly.
 ## Running the agent
 
 ```bash
-java -javaagent:agent.jar=1280x720 -jar Client.jar
+java -javaagent:agent.jar -jar Client.jar
 ```
 
 ## What to expect on startup
