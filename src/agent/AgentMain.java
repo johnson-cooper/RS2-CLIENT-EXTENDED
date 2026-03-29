@@ -8,6 +8,7 @@ public class AgentMain {
         System.out.println("[Agent] loaded");
 
         inst.addTransformer(new FrameBufferScaleTransformer(), true);
+        inst.addTransformer(new ZoomTransformer(), true);
         CoordinateHook.install(inst);
 
         WindowStretch.start();

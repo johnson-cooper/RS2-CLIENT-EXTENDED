@@ -34,6 +34,7 @@ public class CoordinateHook implements ClassFileTransformer {
         if (clientInstance == null) return;
 
         TileProjector.init(clientInstance, clientClass, aJClass, zClass);
+        ZoomController.init(clientInstance, clientClass);
         initialized = true;
         System.out.println("[CoordHook] TileProjector initialized");
     }

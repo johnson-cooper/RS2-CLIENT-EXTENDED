@@ -23,8 +23,6 @@ public final class ScaleHelper {
         }
         if (g2d == null) return;
         try {
-            // Use ClientConfig which is kept current by ClientSidebar.layoutFrame
-            // on every resize event — no lag, no debounce needed.
             g2d.setTransform(AffineTransform.getScaleInstance(
                     ClientConfig.getScaleX(),
                     ClientConfig.getScaleY()
@@ -39,8 +37,6 @@ public final class ScaleHelper {
     }
 
     public static void clearGraphics() {
-        // Only release our reference — never reset the transform.
-        // The game manages its own Graphics state after drawImage.
         currentGraphics.remove();
     }
 

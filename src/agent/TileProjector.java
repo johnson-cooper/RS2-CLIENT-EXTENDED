@@ -193,9 +193,10 @@ public class TileProjector {
 
         if (z3 < 50) return new int[]{-1, -1};
 
+        int focal = agent.ZoomController.getFocal();
         return new int[]{
-            vpX + (x2 << 9) / z3,
-            vpY + (y2 << 9) / z3
+            vpX + (x2 * focal) / z3,
+            vpY + (y2 * focal) / z3
         };
     }
 
