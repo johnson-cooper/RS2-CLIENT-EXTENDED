@@ -1,6 +1,7 @@
 package agent;
 
 import agent.plugins.tilemarker.*;
+import agent.plugins.fps.FpsOverlay;
 
 import java.awt.*;
 import java.awt.geom.AffineTransform;
@@ -46,7 +47,9 @@ public final class Hooks {
 
         Graphics g = ScaleHelper.getGraphics();
         if (g == null) return;
-        TileMarkerOverlay.draw((Graphics2D) g);
+        Graphics2D g2d = (Graphics2D) g;
+        FpsOverlay.draw(g2d, fps);
+        TileMarkerOverlay.draw(g2d);
     }
 
     // Keep old signature for compatibility

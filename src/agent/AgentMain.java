@@ -1,7 +1,5 @@
 package agent;
 
-import agent.plugins.tilemarker.*;
-
 import java.lang.instrument.Instrumentation;
 
 public class AgentMain {
@@ -13,15 +11,14 @@ public class AgentMain {
         inst.addTransformer(new ZoomTransformer(), true);
         CoordinateHook.install(inst);
 
-        // Register plugins — order determines sidebar order
-        PluginRegistry.register(new TileMarkerPlugin());
+        // Auto-discover everything under agent.plugins.** that implements Plugin
+        PluginRegistry.discoverAll();
 
         WindowStretch.start();
         Bootstrap.init();
         ZoomController.install();
         ClientSidebar.startWatcher();
 
-        // onLoad() is called after all infrastructure is up
         PluginRegistry.loadAll();
 
         System.out.println("[Agent] ready");
